@@ -164,6 +164,7 @@ func TestNoDriverAvailableLeavesRideMatching(t *testing.T) {
 func TestOfferTimeoutIsTreatedAsRejection(t *testing.T) {
 	e := newEnv(t, standardFleet)
 	r := e.createRide()
+	offered, _ := e.log.last(r, events.OfferCreated)
 
 	e.clock.Advance(29 * time.Second)
 	e.settle()
@@ -179,11 +180,9 @@ func TestOfferTimeoutIsTreatedAsRejection(t *testing.T) {
 	e.expectRide(r, ride.DriverAssigned, "D002")
 
 	expired, ok := e.log.last(r, events.OfferExpired)
-	offered, _ := e.log.last(r, events.OfferCreated)
-	if !ok || expired.DriverID != "D001" || expired.CausationID == "" {
-		t.Fatalf("OfferExpired = %+v", expired)
+	if !ok || expired.DriverID != "D001" || expired.CausationID != offered.ID {
+		t.Fatalf("OfferExpired = %+v, want driver D001 caused by %s", expired, offered.ID)
 	}
-	_ = offered
 
 	// The expired driver can no longer accept.
 	if _, err := e.dispatch.Accept(e.ctx, r, "D001"); !errors.Is(err, apperr.ErrConflict) {

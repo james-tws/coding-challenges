@@ -31,6 +31,8 @@ func race(fns ...func()) {
 
 // AC-09: two rides compete for the only nearby driver.
 func TestConcurrentRidesCannotShareTheSameDriver(t *testing.T) {
+	wins := map[string]int{}
+	defer func() { t.Logf("first ride won %d times, second ride won %d times", wins["first"], wins["second"]) }()
 	for range iterations {
 		e := newEnv(t, map[string]float64{"D001": 0.5}, envOptions{manual: true})
 		r1, r2 := e.createRide(), e.createRide()
@@ -41,8 +43,11 @@ func TestConcurrentRidesCannotShareTheSameDriver(t *testing.T) {
 		)
 
 		winner, loser := r1, r2
+		wins["first"]++
 		if e.ride(r2).AssignedDriverID() == "D001" {
 			winner, loser = r2, r1
+			wins["first"]--
+			wins["second"]++
 		}
 		e.expectRide(winner, ride.DriverAssigned, "D001")
 		e.expectRide(loser, ride.Matching, "")
@@ -105,6 +110,8 @@ func TestConcurrentDuplicateMatchingCreatesOneOffer(t *testing.T) {
 
 // Accept and timeout at the same instant: exactly one outcome, never a mix.
 func TestConcurrentAcceptAndTimeout(t *testing.T) {
+	outcomes := map[dispatch.OfferStatus]int{}
+	defer func() { t.Logf("outcomes: %v", outcomes) }()
 	for range iterations {
 		e := newEnv(t, map[string]float64{"D001": 0.5}, envOptions{manual: true})
 		r := e.createRide()
@@ -116,7 +123,9 @@ func TestConcurrentAcceptAndTimeout(t *testing.T) {
 		)
 
 		got, d := e.ride(r), e.driver("D001")
-		switch status := e.offerStatus(r, "D001"); status {
+		status := e.offerStatus(r, "D001")
+		outcomes[status]++
+		switch status {
 		case dispatch.OfferAccepted:
 			if got.Status() != ride.DriverAccepted || d.Status() != driver.Busy {
 				t.Fatalf("accepted offer but ride=%s driver=%s", got.Status(), d.Status())
@@ -152,6 +161,8 @@ func TestConcurrentAcceptAndCancel(t *testing.T) {
 
 // Reject and timeout at the same instant: the offer resolves once.
 func TestConcurrentRejectAndTimeout(t *testing.T) {
+	outcomes := map[dispatch.OfferStatus]int{}
+	defer func() { t.Logf("outcomes: %v", outcomes) }()
 	for range iterations {
 		e := newEnv(t, map[string]float64{"D001": 0.5}, envOptions{manual: true})
 		r := e.createRide()
@@ -163,6 +174,7 @@ func TestConcurrentRejectAndTimeout(t *testing.T) {
 		)
 
 		status := e.offerStatus(r, "D001")
+		outcomes[status]++
 		if status != dispatch.OfferRejected && status != dispatch.OfferExpired {
 			t.Fatalf("offer ended %s", status)
 		}
