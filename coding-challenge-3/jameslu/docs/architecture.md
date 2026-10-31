@@ -347,9 +347,12 @@ same key therefore cannot both create a ride. **(future)** Keys expire after 24 
 
 Errors use one shape: `{"error": {"code": "INVALID_TRANSITION", "message": "…"}}`.
 
+`POST /rides` also returns a `Location: /rides/{rideId}` header. Every response
+carries `X-Request-ID` (echoed from the request, or generated).
+
 Configuration (environment variables): `PORT` (8080), `DISPATCH_RADIUS_KM` (2),
-`OFFER_TIMEOUT` (30s), `DISPATCH_WORKERS` (4). Passengers and drivers are seeded
-at startup.
+`OFFER_TIMEOUT` (30s), `DISPATCH_WORKERS` (4, the number of bus partitions),
+`LOG_LEVEL` (info). Passengers and drivers are seeded at startup.
 
 ---
 
@@ -360,10 +363,12 @@ and where relevant `driver_id`, `offer_id`, `event_id`, `causation_id`. Log mess
 are stable event names, so they can be filtered:
 
 ```
-ride.created  dispatch.matching_started  dispatch.candidates_found
-dispatch.claim_lost  dispatch.offer_created  offer.accepted  offer.rejected
-offer.expired  dispatch.matching_exhausted  ride.cancelled  ride.completed
-bus.redelivery  bus.dead_lettered
+ride.created  ride.create_replayed  ride.cancelled  ride.completed
+dispatch.matching_started  dispatch.matching_skipped  dispatch.matching_exhausted
+dispatch.claim_lost  dispatch.claim_compensated  dispatch.offer_created
+offer.accepted  offer.rejected  offer.expired  offer.rolled_forward  offer.closed
+driver.availability_changed  driver.location_updated (debug)
+bus.redelivery  bus.dead_lettered  bus.duplicate_skipped  http.request
 ```
 
 "What happened to ride R001?" is answered in two ways:
@@ -472,14 +477,18 @@ Where the brief is ambiguous, this is the position taken and why.
 
 ```
 coding-challenge-3/jameslu/
-├── cmd/server/            main: wiring, config, seed data
+├── cmd/server/            main: config, logger, HTTP server, graceful shutdown
 ├── internal/
+│   ├── app/               wiring of all modules + seed data (shared by main and the API tests)
+│   ├── apperr/            error categories mapped to HTTP status codes
 │   ├── geo/               Location value object, Haversine
+│   ├── passenger/         seeded passenger directory
 │   ├── ride/              Ride aggregate, repository port + in-memory adapter, idempotency store
 │   ├── driver/            Driver aggregate, repository port + in-memory adapter
-│   ├── dispatch/          Matcher, offer saga, offer store, timeout scheduler, event handlers
-│   ├── platform/          event bus, clock, scheduler, id generator, logging
-│   └── httpapi/           handlers, request validation, error mapping
+│   ├── dispatch/          Matcher, offer store, offer saga, timeouts, event handler
+│   ├── timeline/          per-ride event log behind GET /rides/{id}/timeline
+│   ├── httpapi/           handlers, request validation, error mapping
+│   └── platform/          bus, clock (real + fake), events, ids, trace (causation id)
 └── docs/
 ```
 
@@ -489,9 +498,9 @@ coding-challenge-3/jameslu/
 |---|---|---|
 | Domain | Every row of the transition tables, valid / invalid / duplicate | table-driven unit tests |
 | Matching | nearest selected, outside radius, offline, busy, none available, tie-break, exclusion | unit tests on `Matcher` with a fake `DriverLocator` |
-| Saga | offer / accept / reject / expire / cancel / complete, incl. compensation and roll-forward | in-memory adapters, fake clock, synchronous bus |
-| Concurrency | two rides vs one driver; accept vs timeout; duplicate `RideCreated` on two workers | goroutines released by a barrier, repeated 1,000×, `go test -race` |
-| API | status codes, validation, `Idempotency-Key` replay / mismatch / in-progress | `net/http/httptest` |
+| Saga | offer / accept / reject / expire / cancel / complete, incl. compensation and roll-forward | in-memory adapters, fake clock, real bus + `WaitIdle` |
+| Concurrency | two rides vs one driver; accept vs timeout / cancel; reject vs timeout; duplicate matching; same `Idempotency-Key` | goroutines released by a barrier, repeated 1,000×, `go test -race` |
+| API | status codes, validation, `Idempotency-Key` replay / mismatch, timeline | `net/http/httptest` against the fully wired app |
 
 Time is injected (`Clock`, `Scheduler`), so the 30 s offer timeout is tested by advancing a
 fake clock, never by sleeping.

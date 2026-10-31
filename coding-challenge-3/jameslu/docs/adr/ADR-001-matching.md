@@ -38,19 +38,19 @@ order by (distance asc, driverId asc)
 
 ### 2. Behind a port
 
-The matcher depends on two narrow interfaces, not on the driver store:
+The matcher depends on one narrow interface, not on the driver store
+(`internal/dispatch/matcher.go`):
 
 ```go
 type DriverLocator interface {
-    // Snapshot of AVAILABLE drivers that may be near the point. Implementations
-    // may over-approximate (e.g. a whole geo cell); the matcher filters exactly.
-    AvailableNear(p geo.Location, radiusKm float64) []DriverCandidate
-}
-
-type ExclusionPolicy interface {
-    Excluded(rideID string) map[string]bool
+    // AVAILABLE drivers that may be near the point. Implementations may
+    // over-approximate (e.g. a whole geo cell); the matcher filters exactly.
+    AvailableNear(ctx context.Context, p geo.Location, radiusKm float64) []driver.Candidate
 }
 ```
+
+The excluded set is passed in by the saga, which reads it from the offer store
+(`OfferStore.Excluded`).
 
 The in-memory `DriverLocator` is a linear scan. A geo-indexed implementation (Redis
 `GEOSEARCH`, H3 cells) replaces it without touching the matcher or its tests (see

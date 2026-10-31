@@ -62,8 +62,8 @@ transition method, so the guard lives in the domain, not in the repository.
 ```go
 // Repository port (same shape for Ride and Driver).
 // Update loads the aggregate, runs fn, and saves the result atomically.
-// fn calls domain transition methods; if it returns an error nothing is saved.
-Update(ctx context.Context, id string, fn func(*Driver) (changed bool, err error)) (Driver, error)
+// fn calls domain transition methods; on error or changed=false nothing is saved.
+Update(ctx context.Context, id string, fn func(*Driver) (bool, error)) (Driver, bool, error)
 ```
 
 **In-memory adapter:** `Update` holds the repository's `sync.Mutex` for the whole
@@ -152,12 +152,19 @@ saga ordering then surfaces as an error instead of silently producing a double o
 
 ## Verification
 
+Tests live in `internal/dispatch/concurrency_test.go` unless noted. Each one releases
+goroutines together with a barrier and repeats the race on a fresh system 1,000×.
+
 | Test | Shape |
 |---|---|
-| Two rides, one driver | R001 and R002 both in range of only D001. Matching runs on two goroutines released by a barrier, repeated 1,000×. Assert exactly one `PENDING` offer for D001 and the other ride in `MATCHING` with no `assignedDriverId`. |
-| Two rides, two drivers | Same race with D002 also in range. Assert the rides end up with **different** drivers. |
-| Accept vs timeout | Fire `accept` and `expire` concurrently, 1,000×. Assert the end state is either (`DRIVER_ACCEPTED`, `BUSY`) or (`MATCHING`, `AVAILABLE`), never a mix. |
-| Duplicate `RideCreated` | Deliver the same event to two handlers concurrently. Assert one offer, and that no driver is left `OFFERED` without a pending offer. |
-| Same `Idempotency-Key` concurrently | 20 concurrent `POST /rides` with one key. Assert exactly one ride exists. |
+| `TestConcurrentRidesCannotShareTheSameDriver` | Two rides, only D001 in range. Exactly one `PENDING` offer for D001. The other ride stays `MATCHING` with no `assignedDriverId`. |
+| `TestConcurrentRidesGetDifferentDrivers` | Same race with D002 also in range. The rides end up with **different** drivers. |
+| `TestConcurrentDuplicateMatchingCreatesOneOffer` | One ride matched twice at once. One offer, and the other driver is left `AVAILABLE` (claim compensated). |
+| `TestConcurrentAcceptAndTimeout` | End state is (`ACCEPTED`, `DRIVER_ACCEPTED`, `BUSY`) or (`EXPIRED`, `MATCHING`, `AVAILABLE`), never a mix. |
+| `TestConcurrentAcceptAndCancel` | Ride ends `CANCELLED`, driver `AVAILABLE`, whichever runs first. |
+| `TestConcurrentRejectAndTimeout` | The offer resolves exactly once. Ride `MATCHING`, driver `AVAILABLE`. |
+| `TestMemoryRepositoryConcurrentClaimHasOneWinner` (driver) | 64 goroutines claim one driver: exactly one wins. |
+| `TestConcurrentCreateWithSameKeyCreatesOneRide` (ride) | 20 concurrent creates with one key, 200×: exactly one ride. |
 
-All tests run under `go test -race ./...`.
+The tests log how often each side of a race wins (e.g. `outcomes: map[ACCEPTED:248 EXPIRED:752]`),
+which shows that both interleavings really happen. All tests run under `go test -race ./...`.
