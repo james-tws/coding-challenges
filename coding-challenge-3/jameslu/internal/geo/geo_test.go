@@ -62,10 +62,10 @@ func TestDistanceKm(t *testing.T) {
 		t.Fatalf("one degree of latitude = %v km, want ~111.195", d)
 	}
 
-	// Ben Thanh market to Tan Son Nhat airport, roughly 9.4 km in a straight line.
+	// The brief's pickup and destination, roughly 9.3 km apart in a straight line.
 	airport := geo.MustLocation(10.8231, 106.6297)
-	if d := geo.DistanceKm(origin, airport); d < 9.2 || d > 9.6 {
-		t.Fatalf("HCMC example distance = %v km, want ~9.4", d)
+	if d := geo.DistanceKm(origin, airport); d < 9.2 || d > 9.5 {
+		t.Fatalf("brief example distance = %v km, want ~9.3", d)
 	}
 
 	if geo.DistanceKm(origin, airport) != geo.DistanceKm(airport, origin) {
