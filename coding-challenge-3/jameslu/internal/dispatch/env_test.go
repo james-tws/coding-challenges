@@ -37,6 +37,9 @@ type envOptions struct {
 	// manual leaves the dispatch handler unsubscribed, so a test can call
 	// Match itself and control the interleaving.
 	manual bool
+	// wrapRides lets a test intercept the Ride module calls made by Dispatch,
+	// to inject an action between two saga steps.
+	wrapRides func(dispatch.Rides) dispatch.Rides
 }
 
 // newEnv registers AVAILABLE drivers at the given distances (km due north of
@@ -58,8 +61,12 @@ func newEnv(t *testing.T, distances map[string]float64, opts ...envOptions) *env
 	})
 	e.drivers = driver.NewService(driver.NewMemoryRepository(), e.clock, nil)
 	e.offers = dispatch.NewOfferStore()
+	var rides dispatch.Rides = e.rides
+	if o.wrapRides != nil {
+		rides = o.wrapRides(rides)
+	}
 	e.dispatch = dispatch.NewService(dispatch.Deps{
-		Rides:   e.rides,
+		Rides:   rides,
 		Drivers: e.drivers,
 		Offers:  e.offers,
 		Events:  e.bus,

@@ -1,7 +1,9 @@
 package dispatch_test
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -320,4 +322,40 @@ func TestMatchSkipsRideCancelledBeforeDispatch(t *testing.T) {
 	}
 	e.expectRide(r, ride.Cancelled, "")
 	e.expectDriver("D001", driver.Available, "")
+}
+
+// cancelAfterAssign cancels the ride right after the saga assigns it, i.e.
+// between step 2 (assign) and step 3 (create offer) of the offer saga.
+type cancelAfterAssign struct {
+	dispatch.Rides
+	cancel func(rideID string)
+	once   sync.Once
+}
+
+func (c *cancelAfterAssign) Assign(ctx context.Context, id, driverID string) (ride.Ride, bool, error) {
+	r, changed, err := c.Rides.Assign(ctx, id, driverID)
+	if err == nil && changed {
+		c.once.Do(func() { c.cancel(id) })
+	}
+	return r, changed, err
+}
+
+func TestCancelBetweenAssignAndOfferLeavesNoPendingOffer(t *testing.T) {
+	var e *env
+	e = newEnv(t, map[string]float64{"D001": 0.5}, envOptions{
+		wrapRides: func(r dispatch.Rides) dispatch.Rides {
+			return &cancelAfterAssign{Rides: r, cancel: func(id string) { _, _ = e.dispatch.Cancel(e.ctx, id) }}
+		},
+	})
+	r := e.createRide()
+
+	e.expectRide(r, ride.Cancelled, "D001")
+	e.expectDriver("D001", driver.Available, "")
+	if status := e.offerStatus(r, "D001"); status == dispatch.OfferPending {
+		t.Fatal("a PENDING offer was left behind for a cancelled ride")
+	}
+
+	// D001 must be able to take the next ride straight away.
+	next := e.createRide()
+	e.expectRide(next, ride.DriverAssigned, "D001")
 }
