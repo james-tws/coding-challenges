@@ -186,6 +186,15 @@ func (s *Service) tryOffer(ctx context.Context, rideID string, c Candidate) (boo
 		_, _ = s.drivers.Release(ctx, c.DriverID, rideID)
 		return true, fmt.Errorf("create offer: %w", err)
 	}
+
+	// A cancel that ran between steps 2 and 3 could not see this offer. The
+	// cancel transitions the ride before it looks for the offer, so either it
+	// found the offer, or this read sees the cancelled ride and closes it.
+	if current, err := s.rides.Get(ctx, rideID); err == nil && current.Status().Terminal() {
+		log.Info("dispatch.offer_superseded", "offer_id", o.ID(), "ride_status", current.Status())
+		return true, s.reconcile(ctx, rideID, c.DriverID)
+	}
+
 	created := events.New(ctx, events.OfferCreated, rideID, c.DriverID, now)
 	log.Info("dispatch.offer_created", "offer_id", o.ID(), "event_id", created.ID,
 		"distance_km", c.DistanceKm, "expires_at", o.ExpiresAt())
