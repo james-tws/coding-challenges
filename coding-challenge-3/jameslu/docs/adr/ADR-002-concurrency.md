@@ -28,6 +28,7 @@ and the driver. We need:
 | R7 | A delayed compensation/timeout releases a driver that has since moved on to another ride | Driver freed while serving someone |
 | R8 | Driver rejects at the moment the offer times out | Double rematch, or the offer marked twice |
 | R9 | Two `POST /rides` with the same `Idempotency-Key` arrive together | Two rides for one request |
+| R10 | Passenger cancels between the saga's `ride.assign` and offer creation | A `PENDING` offer for a cancelled ride. The driver looks `AVAILABLE` but cannot take a new offer |
 
 ## Decision
 
@@ -120,6 +121,7 @@ saga ordering then surfaces as an error instead of silently producing a double o
 | R7 | Conditional `release(r)`. |
 | R8 | Same as R2: one `releaseAssignment` wins. The offer moves `PENDING → REJECTED` or `PENDING → EXPIRED` exactly once, and only the winner publishes the rematch event. |
 | R9 | The idempotency store reserves the key atomically (`IN_PROGRESS`) before the ride is created. The concurrent duplicate gets `409`. |
+| R10 | After creating the offer, the saga re-reads the ride. Cancel moves the ride *before* it looks for the offer, so one of the two always sees the other: either cancel closes the offer, or the saga sees `CANCELLED` and closes it itself. Covered by `TestCancelBetweenAssignAndOfferLeavesNoPendingOffer`. |
 
 ## Alternatives considered
 

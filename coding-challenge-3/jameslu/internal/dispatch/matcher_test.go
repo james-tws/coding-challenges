@@ -71,7 +71,9 @@ func TestMatcherSelectsNearestAndExcludesOutsideRadius(t *testing.T) {
 
 func TestMatcherRadiusIsInclusive(t *testing.T) {
 	drivers := fleet(t, map[string]float64{"D001": 2.0})
-	got := dispatch.Matcher{Locator: drivers, RadiusKm: 2.0000001}.Candidates(context.Background(), pickup, nil)
+	d, _ := drivers.Get(context.Background(), "D001")
+	edge := geo.DistanceKm(pickup, d.Location()) // the radius is exactly the driver's distance
+	got := dispatch.Matcher{Locator: drivers, RadiusKm: edge}.Candidates(context.Background(), pickup, nil)
 	if len(got) != 1 {
 		t.Fatalf("driver at the radius edge excluded: %v", got)
 	}

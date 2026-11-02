@@ -143,10 +143,18 @@ their state directly.
 - **Event-driven approach.** `RideCreated`, `OfferRejected` and `OfferExpired`
   trigger matching on a dispatch worker. The bus is partitioned by `rideId`, like
   a Kafka partition key, so a ride's events are handled in order while different
-  rides run in parallel. Delivery is at-least-once with retries and a dead-letter
-  list. See [architecture §5](docs/architecture.md#5-event-driven-dispatch), which
-  also explains why asynchronous processing was chosen and what happens on
-  duplicate delivery and on failure.
+  rides run in parallel. Details in
+  [architecture §5](docs/architecture.md#5-event-driven-dispatch).
+  - *Why asynchronous:* creating a ride never waits for, or fails because of, the
+    geo search. Matching scales separately from the API, and a failed attempt is
+    retried without the passenger resubmitting.
+  - *If a message is delivered twice:* the consumer's inbox skips known event ids.
+    Even without it, the duplicate finds the ride already past matching (or loses
+    the conditional `assign`) and does nothing.
+  - *If processing fails:* the handler is retried with exponential backoff (5
+    attempts, panics included), then the event is dead-lettered with an `ERROR` log.
+    Steps are idempotent, so a retry after partial progress is safe. The ride stays
+    in a visible, safe state (`REQUESTED`/`MATCHING`).
 - **Observability.** JSON logs carry `ride_id`, `driver_id`, `event_id` and
   `causation_id`. Every event records its cause, so the chain
   `HTTP request → RideCreated → OfferCreated → OfferExpired → …` can be followed.

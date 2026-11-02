@@ -35,7 +35,7 @@ separate services.**
   that module's API.
 - Every cross-module operation is designed to survive the modules being split
   across a network: each step is atomic on its own, idempotent, and recoverable.
-- Every infrastructure dependency (storage, bus, clock, scheduler) sits behind a
+- Every infrastructure dependency (storage, bus, clock and timers) sits behind a
   port, so moving to Postgres or Kafka means swapping an adapter, not rewriting the
   domain.
 
@@ -218,7 +218,7 @@ the action that wins on the ride goes on to touch the driver and the offer.
 
 | Command | Step 1 | Step 2 | Step 3 | On step failure |
 |---|---|---|---|---|
-| **Offer** (from matcher) | `driver.claim(r)` | `ride.assign(d)` | create `PENDING` offer, arm timeout | step 2 fails → `driver.release(r)` (compensation) |
+| **Offer** (from matcher) | `driver.claim(r)` | `ride.assign(d)` | create `PENDING` offer, re-read the ride, arm timeout | step 2 fails → `driver.release(r)` (compensation). Ride already terminal after step 3 → close the offer and release the driver |
 | **Accept** | `ride.accept(d)` | `driver.markBusy(r)` | offer → `ACCEPTED` | step 1 fails → `409`, nothing changed |
 | **Reject** | `ride.releaseAssignment(d)` | offer → `REJECTED` | `driver.release(r)`, publish `OfferRejected` | step 1 fails → `409` |
 | **Expire** (timer) | `ride.releaseAssignment(d)` | offer → `EXPIRED` | `driver.release(r)`, publish `OfferExpired` | ride already `DRIVER_ACCEPTED` by `d` → roll forward (finish accept) |
@@ -241,6 +241,10 @@ Two consequences worth stating:
 - **Rejected/expired offers are recorded before the driver is released.** By the time
   the driver is `AVAILABLE` again, the exclusion rule already sees them, so a racing
   rematch cannot offer the same ride back to them.
+- **A cancel can land between steps 2 and 3 of the offer saga.** It then finds no offer
+  to close. The saga covers this by re-reading the ride *after* creating the offer:
+  the cancel moves the ride before it looks for the offer, so either the cancel sees
+  the offer, or the re-read sees the cancelled ride and closes the offer itself.
 
 ---
 
@@ -284,7 +288,10 @@ Every event carries an envelope: `eventId` (unique), `type`, `rideId`,
 - **Partitioned by `rideId`.** `N` worker goroutines, and an event goes to worker
   `hash(rideId) % N`. Events of the same ride are processed in order, one at a time.
   Different rides are processed in parallel, which is exactly where AC-09's race lives.
-  This mirrors a Kafka partition key, so the semantics survive the migration.
+  This mirrors a Kafka partition key, so the semantics survive the migration. A retried
+  delivery goes to the back of its partition's queue, so while it waits for its retry,
+  later events of the same ride can overtake it. Handlers do not rely on order: each
+  one re-reads the ride and acts on its current state.
 - **At-least-once.** Publishing happens after the state change is committed. A
   handler error triggers redelivery with exponential backoff (up to 5 attempts),
   then the event goes to a dead-letter list with an `ERROR` log line.
@@ -308,7 +315,7 @@ Every event carries an envelope: `eventId` (unique), `type`, `rideId`,
   idempotent, so a retry after a partial success is safe.
 - After the attempts are exhausted → dead-letter list + `ERROR` log with
   `rideId`/`eventId`. The ride stays in `REQUESTED` or `MATCHING`, which is a safe,
-  visible state, and the timeline shows the failure. **(future)** A sweeper re-drives
+  visible state (the failure is in the logs, not in the timeline). **(future)** A sweeper re-drives
   rides stuck in `MATCHING`/`REQUESTED` and offers past `expiresAt`.
 - A panicking handler is recovered by the worker and treated as an error.
 
@@ -366,6 +373,7 @@ are stable event names, so they can be filtered:
 ride.created  ride.create_replayed  ride.cancelled  ride.completed
 dispatch.matching_started  dispatch.matching_skipped  dispatch.matching_exhausted
 dispatch.claim_lost  dispatch.claim_compensated  dispatch.offer_created
+dispatch.offer_superseded  dispatch.ride_not_found
 offer.accepted  offer.rejected  offer.expired  offer.rolled_forward  offer.closed
 driver.availability_changed  driver.location_updated (debug)
 bus.redelivery  bus.dead_lettered  bus.duplicate_skipped  http.request
@@ -497,13 +505,13 @@ coding-challenge-3/jameslu/
 | Level | What | Tooling |
 |---|---|---|
 | Domain | Every row of the transition tables, valid / invalid / duplicate | table-driven unit tests |
-| Matching | nearest selected, outside radius, offline, busy, none available, tie-break, exclusion | unit tests on `Matcher` with a fake `DriverLocator` |
+| Matching | nearest selected, outside radius, offline, busy, none available, tie-break, exclusion, latest location | unit tests on `Matcher`, with the real Driver module as `DriverLocator` |
 | Saga | offer / accept / reject / expire / cancel / complete, incl. compensation and roll-forward | in-memory adapters, fake clock, real bus + `WaitIdle` |
-| Concurrency | two rides vs one driver; accept vs timeout / cancel; reject vs timeout; duplicate matching; same `Idempotency-Key` | goroutines released by a barrier, repeated 1,000×, `go test -race` |
+| Concurrency | two rides vs one driver; accept vs timeout / cancel; reject vs timeout; duplicate matching; same `Idempotency-Key` | goroutines released by a barrier, repeated 1,000× (200× for the idempotency key), `go test -race` |
 | API | status codes, validation, `Idempotency-Key` replay / mismatch, timeline | `net/http/httptest` against the fully wired app |
 
-Time is injected (`Clock`, `Scheduler`), so the 30 s offer timeout is tested by advancing a
-fake clock, never by sleeping.
+Time is injected through `clock.Clock` (`Now` and `AfterFunc`), so the 30 s offer timeout is
+tested by advancing a fake clock, never by sleeping.
 
 ---
 
